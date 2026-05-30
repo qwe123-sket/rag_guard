@@ -6,7 +6,62 @@ import argparse
 import sys
 
 from ragguard.audit.runner import AuditRunner
+from ragguard.data.seed import load_seed_documents
+from ragguard.pipeline import SecureRAGPipeline
 from ragguard.report.generator import write_report
+
+
+def run_query(
+    question: str,
+    *,
+    user_dept: str = "ops",
+    secure: bool = True,
+    top_k: int | None = None,
+) -> None:
+    pipe = SecureRAGPipeline()
+    try:
+        pipe.bootstrap(load_seed_documents())
+        result = pipe.query(
+            question,
+            user_dept=user_dept,
+            top_k=top_k,
+            secure=secure,
+        )
+        print(pipe.explain(result))
+    finally:
+        pipe.close()
+
+
+def run_interactive(
+    *,
+    user_dept: str = "ops",
+    secure: bool = True,
+    top_k: int | None = None,
+) -> None:
+    pipe = SecureRAGPipeline()
+    try:
+        print("正在加载种子文档并建立索引（首次需下载 Embedding 模型）…")
+        pipe.bootstrap(load_seed_documents())
+        mode = "加固链路" if secure else "裸检索"
+        print(f"RagGuard 交互模式 [{mode}] 部门={user_dept}，输入问题后回车；空行或 quit 退出\n")
+        while True:
+            try:
+                question = input("Q> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not question or question.lower() in {"quit", "exit", "q"}:
+                break
+            result = pipe.query(
+                question,
+                user_dept=user_dept,
+                top_k=top_k,
+                secure=secure,
+            )
+            print(pipe.explain(result))
+            print()
+    finally:
+        pipe.close()
 
 
 def run_demo() -> None:
@@ -30,7 +85,43 @@ def run_demo() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ragguard")
     parser.add_argument("--demo", action="store_true", help="运行安全验证")
+    parser.add_argument("-q", "--query", metavar="TEXT", help="单次检索问答")
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="交互模式，可连续输入问题",
+    )
+    parser.add_argument(
+        "--dept",
+        default="ops",
+        choices=["ops", "finance", "hr"],
+        help="模拟用户部门（默认 ops）",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="关闭 ACL/验签/阈值，对比裸 RAG",
+    )
+    parser.add_argument("--top-k", type=int, default=None, help="检索条数")
     args = parser.parse_args(argv)
+
+    if args.interactive:
+        run_interactive(
+            user_dept=args.dept,
+            secure=not args.insecure,
+            top_k=args.top_k,
+        )
+        return 0
+
+    if args.query:
+        run_query(
+            args.query,
+            user_dept=args.dept,
+            secure=not args.insecure,
+            top_k=args.top_k,
+        )
+        return 0
 
     if args.demo or len(argv or sys.argv) == 1:
         run_demo()
